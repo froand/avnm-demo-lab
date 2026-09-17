@@ -1,0 +1,1239 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.40.2.10011",
+      "templateHash": "13082377721932449019"
+    }
+  },
+  "parameters": {
+    "adminUsername": {
+      "type": "string",
+      "defaultValue": "AzureAdmin",
+      "metadata": {
+        "description": "Username for the Virtual Machine."
+      }
+    },
+    "adminPassword": {
+      "type": "securestring",
+      "metadata": {
+        "description": "Password for the Virtual Machine. Supply your own strong password at deployment time."
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Location for all resources."
+      }
+    },
+    "copies": {
+      "type": "int",
+      "defaultValue": 32,
+      "minValue": 1,
+      "maxValue": 254,
+      "metadata": {
+        "description": "Number of VNETs and VMs to deploy"
+      }
+    },
+    "vmsize": {
+      "type": "string",
+      "defaultValue": "Standard_D2s_v5"
+    },
+    "virtualNetworkName": {
+      "type": "string",
+      "defaultValue": "anm-vnet-",
+      "metadata": {
+        "description": "Prefix Name of VNETs"
+      }
+    },
+    "virtualNetworkTagGr1": {
+      "type": "string",
+      "defaultValue": "Production"
+    },
+    "virtualNetworkTagGr2": {
+      "type": "string",
+      "defaultValue": "Development"
+    },
+    "rgName": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().name]",
+      "metadata": {
+        "description": "Name of the resource group"
+      }
+    },
+    "sourceIPaddressRDP": {
+      "type": "string",
+      "defaultValue": "203.0.113.1",
+      "metadata": {
+        "description": "remote desktop source address - replace with your own public IP address"
+      }
+    },
+    "subnetName": {
+      "type": "string",
+      "defaultValue": "vmSubnet",
+      "metadata": {
+        "description": "Name of the subnet to create in the virtual network"
+      }
+    },
+    "gwsubnetName": {
+      "type": "string",
+      "defaultValue": "GatewaySubnet"
+    },
+    "bastionsubnetName": {
+      "type": "string",
+      "defaultValue": "AzureBastionSubnet"
+    },
+    "firewallsubnetName": {
+      "type": "string",
+      "defaultValue": "AzureFirewallSubnet"
+    },
+    "firewallmanagementsubnetName": {
+      "type": "string",
+      "defaultValue": "AzureFirewallManagementSubnet"
+    },
+    "nicName": {
+      "type": "string",
+      "defaultValue": "VMNic-",
+      "metadata": {
+        "description": "Prefix name of the nic of the vm"
+      }
+    },
+    "vmName": {
+      "type": "string",
+      "defaultValue": "VM-",
+      "metadata": {
+        "description": "Prefix name of the nic of the vm"
+      }
+    },
+    "flowlogSt": {
+      "type": "string",
+      "defaultValue": "[format('flowlog{0}', uniqueString(parameters('rgName'), subscription().subscriptionId))]",
+      "metadata": {
+        "description": "Flow log storage account name"
+      }
+    }
+  },
+  "variables": {
+    "imagePublisher": "MicrosoftWindowsServer",
+    "imageOffer": "WindowsServer",
+    "imageSku": "2022-Datacenter"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/publicIPPrefixes",
+      "apiVersion": "2024-05-01",
+      "name": "prefix",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard"
+      },
+      "zones": [
+        "1",
+        "2",
+        "3"
+      ],
+      "properties": {
+        "prefixLength": 28
+      }
+    },
+    {
+      "copy": {
+        "name": "virtualNetwork",
+        "count": "[length(range(0, parameters('copies')))]"
+      },
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}{1}', parameters('virtualNetworkName'), range(0, parameters('copies'))[copyIndex()])]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "group": "[if(less(range(0, parameters('copies'))[copyIndex()], div(parameters('copies'), 2)), parameters('virtualNetworkTagGr1'), parameters('virtualNetworkTagGr2'))]"
+      },
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "[format('10.0.{0}.0/24', range(0, parameters('copies'))[copyIndex()])]"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "[parameters('subnetName')]",
+            "properties": {
+              "addressPrefix": "[format('10.0.{0}.0/27', range(0, parameters('copies'))[copyIndex()])]",
+              "delegations": [],
+              "privateEndpointNetworkPolicies": "Enabled",
+              "privateLinkServiceNetworkPolicies": "Enabled",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', 'anvm-nsg')]"
+              }
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkSecurityGroups', 'anvm-nsg')]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "gwsubnet",
+        "count": "[length(createArray(0, div(parameters('copies'), 2)))]"
+      },
+      "type": "Microsoft.Network/virtualNetworks/subnets",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', format('{0}{1}', parameters('virtualNetworkName'), range(0, parameters('copies'))[createArray(0, div(parameters('copies'), 2))[copyIndex()]]), parameters('gwsubnetName'))]",
+      "properties": {
+        "addressPrefix": "[format('10.0.{0}.32/27', createArray(0, div(parameters('copies'), 2))[copyIndex()])]",
+        "delegations": [],
+        "privateEndpointNetworkPolicies": "Enabled",
+        "privateLinkServiceNetworkPolicies": "Enabled"
+      },
+      "dependsOn": [
+        "bastionsubnet",
+        "firewallmanagementsubnet",
+        "firewallsubnet",
+        "virtualNetwork"
+      ]
+    },
+    {
+      "copy": {
+        "name": "firewallsubnet",
+        "count": "[length(createArray(0, div(parameters('copies'), 2)))]"
+      },
+      "type": "Microsoft.Network/virtualNetworks/subnets",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', format('{0}{1}', parameters('virtualNetworkName'), range(0, parameters('copies'))[createArray(0, div(parameters('copies'), 2))[copyIndex()]]), parameters('firewallsubnetName'))]",
+      "properties": {
+        "addressPrefix": "[format('10.0.{0}.64/26', createArray(0, div(parameters('copies'), 2))[copyIndex()])]",
+        "delegations": [],
+        "privateEndpointNetworkPolicies": "Enabled",
+        "privateLinkServiceNetworkPolicies": "Enabled"
+      },
+      "dependsOn": [
+        "virtualNetwork"
+      ]
+    },
+    {
+      "copy": {
+        "name": "firewallmanagementsubnet",
+        "count": "[length(createArray(0, div(parameters('copies'), 2)))]"
+      },
+      "type": "Microsoft.Network/virtualNetworks/subnets",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', format('{0}{1}', parameters('virtualNetworkName'), range(0, parameters('copies'))[createArray(0, div(parameters('copies'), 2))[copyIndex()]]), parameters('firewallmanagementsubnetName'))]",
+      "properties": {
+        "addressPrefix": "[format('10.0.{0}.128/26', createArray(0, div(parameters('copies'), 2))[copyIndex()])]",
+        "delegations": [],
+        "privateEndpointNetworkPolicies": "Enabled",
+        "privateLinkServiceNetworkPolicies": "Enabled"
+      },
+      "dependsOn": [
+        "firewallsubnet",
+        "[resourceId('Microsoft.Network/virtualNetworks', format('{0}{1}', parameters('virtualNetworkName'), range(0, parameters('copies'))[createArray(0, div(parameters('copies'), 2))[copyIndex()]]))]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "bastionsubnet",
+        "count": "[length(createArray(0, div(parameters('copies'), 2)))]"
+      },
+      "type": "Microsoft.Network/virtualNetworks/subnets",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', format('{0}{1}', parameters('virtualNetworkName'), range(0, parameters('copies'))[createArray(0, div(parameters('copies'), 2))[copyIndex()]]), parameters('bastionsubnetName'))]",
+      "properties": {
+        "addressPrefix": "[format('10.0.{0}.192/26', createArray(0, div(parameters('copies'), 2))[copyIndex()])]",
+        "delegations": [],
+        "privateEndpointNetworkPolicies": "Enabled",
+        "privateLinkServiceNetworkPolicies": "Enabled"
+      },
+      "dependsOn": [
+        "firewallmanagementsubnet",
+        "[resourceId('Microsoft.Network/virtualNetworks', format('{0}{1}', parameters('virtualNetworkName'), range(0, parameters('copies'))[createArray(0, div(parameters('copies'), 2))[copyIndex()]]))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2022-09-01",
+      "name": "anvm-nsg",
+      "location": "[parameters('location')]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "denyRFC1918-out",
+            "properties": {
+              "priority": 150,
+              "protocol": "*",
+              "access": "Deny",
+              "direction": "Outbound",
+              "destinationAddressPrefixes": [
+                "10.0.0.0/8",
+                "172.16.0.0/12",
+                "192.168.0.0/24"
+              ],
+              "destinationPortRange": "*",
+              "sourceAddressPrefix": "*",
+              "sourcePortRange": "*"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2022-09-01",
+      "name": "[parameters('flowlogSt')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2"
+    },
+    {
+      "type": "Microsoft.Network/azureFirewalls",
+      "apiVersion": "2024-05-01",
+      "name": "hubfirewall-0",
+      "location": "[parameters('location')]",
+      "tags": {
+        "group": "[parameters('virtualNetworkTagGr1')]"
+      },
+      "zones": [
+        "1",
+        "2",
+        "3"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipConfig",
+            "properties": {
+              "subnet": {
+                "id": "[resourceId(parameters('rgName'), 'Microsoft.Network/virtualNetworks/subnets', 'anm-vnet-0', parameters('firewallsubnetName'))]"
+              },
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', 'hubfirewallpip-0')]"
+              }
+            }
+          }
+        ],
+        "managementIpConfiguration": {
+          "name": "managementIpConfig",
+          "properties": {
+            "subnet": {
+              "id": "[resourceId(parameters('rgName'), 'Microsoft.Network/virtualNetworks/subnets', 'anm-vnet-0', parameters('firewallmanagementsubnetName'))]"
+            },
+            "publicIPAddress": {
+              "id": "[resourceId('Microsoft.Network/publicIPAddresses', 'hubfirewallmanagementpip-0')]"
+            }
+          }
+        },
+        "sku": {
+          "tier": "Premium",
+          "name": "AZFW_VNet"
+        },
+        "firewallPolicy": {
+          "id": "[resourceId('Microsoft.Network/firewallPolicies', 'hubfirewallpolicy')]"
+        }
+      },
+      "dependsOn": [
+        "firewallmanagementsubnet",
+        "firewallsubnet",
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('flowlogSt'))]",
+        "hubfirewallmanagementpip",
+        "hubfirewallpip",
+        "[resourceId('Microsoft.Network/firewallPolicies', 'hubfirewallpolicy')]",
+        "virtualNetwork"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/azureFirewalls",
+      "apiVersion": "2024-05-01",
+      "name": "[format('hubfirewall-{0}', div(parameters('copies'), 2))]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "group": "[parameters('virtualNetworkTagGr1')]"
+      },
+      "zones": [
+        "1",
+        "2",
+        "3"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipConfig",
+            "properties": {
+              "subnet": {
+                "id": "[resourceId(parameters('rgName'), 'Microsoft.Network/virtualNetworks/subnets', format('anm-vnet-{0}', div(parameters('copies'), 2)), parameters('firewallsubnetName'))]"
+              },
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', format('hubfirewallpip-{0}', div(parameters('copies'), 2)))]"
+              }
+            }
+          }
+        ],
+        "managementIpConfiguration": {
+          "name": "managementIpConfig",
+          "properties": {
+            "subnet": {
+              "id": "[resourceId(parameters('rgName'), 'Microsoft.Network/virtualNetworks/subnets', format('anm-vnet-{0}', div(parameters('copies'), 2)), parameters('firewallmanagementsubnetName'))]"
+            },
+            "publicIPAddress": {
+              "id": "[resourceId('Microsoft.Network/publicIPAddresses', format('hubfirewallmanagementpip-{0}', div(parameters('copies'), 2)))]"
+            }
+          }
+        },
+        "sku": {
+          "tier": "Premium",
+          "name": "AZFW_VNet"
+        },
+        "firewallPolicy": {
+          "id": "[resourceId('Microsoft.Network/firewallPolicies', 'hubfirewallpolicy')]"
+        }
+      },
+      "dependsOn": [
+        "firewallmanagementsubnet",
+        "firewallsubnet",
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('flowlogSt'))]",
+        "[resourceId('Microsoft.Network/azureFirewalls', 'hubfirewall-0')]",
+        "hubfirewallmanagementpip",
+        "hubfirewallpip",
+        "[resourceId('Microsoft.Network/firewallPolicies', 'hubfirewallpolicy')]",
+        "virtualNetwork"
+      ]
+    },
+    {
+      "copy": {
+        "name": "hubfirewallpip",
+        "count": "[length(createArray(0, div(parameters('copies'), 2)))]"
+      },
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2022-09-01",
+      "name": "[format('hubfirewallpip-{0}', createArray(0, div(parameters('copies'), 2))[copyIndex()])]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "tier": "Regional",
+        "name": "Standard"
+      },
+      "zones": [
+        "1",
+        "2",
+        "3"
+      ],
+      "properties": {
+        "publicIPAddressVersion": "IPv4",
+        "publicIPAllocationMethod": "Static"
+      }
+    },
+    {
+      "copy": {
+        "name": "hubfirewallmanagementpip",
+        "count": "[length(createArray(0, div(parameters('copies'), 2)))]"
+      },
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2022-09-01",
+      "name": "[format('hubfirewallmanagementpip-{0}', createArray(0, div(parameters('copies'), 2))[copyIndex()])]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "tier": "Regional",
+        "name": "Standard"
+      },
+      "zones": [
+        "1",
+        "2",
+        "3"
+      ],
+      "properties": {
+        "publicIPAddressVersion": "IPv4",
+        "publicIPAllocationMethod": "Static"
+      }
+    },
+    {
+      "type": "Microsoft.Network/firewallPolicies",
+      "apiVersion": "2024-03-01",
+      "name": "hubfirewallpolicy",
+      "location": "[parameters('location')]",
+      "properties": {
+        "sku": {
+          "tier": "Premium"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/firewallPolicies/ruleCollectionGroups",
+      "apiVersion": "2020-11-01",
+      "name": "[format('{0}/{1}', 'hubfirewallpolicy', 'NetworkRuleCollectionGroup')]",
+      "properties": {
+        "priority": 200,
+        "ruleCollections": [
+          {
+            "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+            "action": {
+              "type": "Allow"
+            },
+            "rules": [
+              {
+                "ruleType": "NetworkRule",
+                "name": "AllowDNS",
+                "ipProtocols": [
+                  "TCP",
+                  "UDP"
+                ],
+                "sourceAddresses": [
+                  "*"
+                ],
+                "sourceIpGroups": [],
+                "destinationAddresses": [
+                  "8.8.8.8"
+                ],
+                "destinationIpGroups": [],
+                "destinationFqdns": [],
+                "destinationPorts": [
+                  "53"
+                ]
+              }
+            ],
+            "name": "AllowNetwork",
+            "priority": 120
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/firewallPolicies', 'hubfirewallpolicy')]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "hubbastion",
+        "count": "[length(createArray(0, div(parameters('copies'), 2)))]"
+      },
+      "type": "Microsoft.Network/bastionHosts",
+      "apiVersion": "2022-09-01",
+      "name": "[format('hubbastion-{0}', createArray(0, div(parameters('copies'), 2))[copyIndex()])]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard"
+      },
+      "properties": {
+        "enableShareableLink": true,
+        "enableIpConnect": true,
+        "ipConfigurations": [
+          {
+            "name": "ipConf",
+            "properties": {
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses', format('hubbastionpip-{0}', createArray(0, div(parameters('copies'), 2))[if(equals(createArray(0, div(parameters('copies'), 2))[copyIndex()], 0), 0, 1)]))]"
+              },
+              "subnet": {
+                "id": "[resourceId(parameters('rgName'), 'Microsoft.Network/virtualNetworks/subnets', format('anm-vnet-{0}', createArray(0, div(parameters('copies'), 2))[copyIndex()]), parameters('bastionsubnetName'))]"
+              }
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "bastionpip",
+        "bastionsubnet",
+        "virtualNetwork"
+      ]
+    },
+    {
+      "copy": {
+        "name": "bastionpip",
+        "count": "[length(createArray(0, div(parameters('copies'), 2)))]"
+      },
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2022-09-01",
+      "name": "[format('hubbastionpip-{0}', createArray(0, div(parameters('copies'), 2))[copyIndex()])]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard",
+        "tier": "Regional"
+      },
+      "zones": [
+        "1",
+        "2",
+        "3"
+      ],
+      "properties": {
+        "publicIPAllocationMethod": "Static",
+        "publicIPAddressVersion": "IPv4"
+      }
+    },
+    {
+      "copy": {
+        "name": "hubgw",
+        "count": "[length(createArray(0, div(parameters('copies'), 2)))]"
+      },
+      "type": "Microsoft.Network/virtualNetworkGateways",
+      "apiVersion": "2022-09-01",
+      "name": "[format('hubgw-{0}', createArray(0, div(parameters('copies'), 2))[copyIndex()])]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "group": "[if(less(createArray(0, div(parameters('copies'), 2))[copyIndex()], div(parameters('copies'), 2)), parameters('virtualNetworkTagGr1'), parameters('virtualNetworkTagGr2'))]"
+      },
+      "properties": {
+        "sku": {
+          "name": "VpnGw1AZ",
+          "tier": "VpnGw1AZ"
+        },
+        "gatewayType": "Vpn",
+        "vpnType": "RouteBased",
+        "enablePrivateIpAddress": true,
+        "activeActive": false,
+        "enableBgp": true,
+        "bgpSettings": {
+          "asn": "[add(64000, createArray(0, div(parameters('copies'), 2))[copyIndex()])]"
+        },
+        "ipConfigurations": [
+          {
+            "name": "default",
+            "properties": {
+              "publicIPAddress": {
+                "id": "[resourceId(parameters('rgName'), 'Microsoft.Network/publicIPAddresses', format('hubgwpip-{0}', createArray(0, div(parameters('copies'), 2))[copyIndex()]))]"
+              },
+              "subnet": {
+                "id": "[resourceId(parameters('rgName'), 'Microsoft.Network/virtualNetworks/subnets', format('anm-vnet-{0}', createArray(0, div(parameters('copies'), 2))[copyIndex()]), parameters('gwsubnetName'))]"
+              }
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "gwsubnet",
+        "hubgwpubip",
+        "virtualNetwork"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/connections",
+      "apiVersion": "2022-09-01",
+      "name": "conn-low-high",
+      "location": "[parameters('location')]",
+      "properties": {
+        "connectionType": "Vnet2Vnet",
+        "enableBgp": true,
+        "sharedKey": "tunnelKey",
+        "virtualNetworkGateway1": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworkGateways', format('hubgw-{0}', createArray(0, div(parameters('copies'), 2))[0]))]",
+          "properties": {}
+        },
+        "virtualNetworkGateway2": {
+          "properties": {},
+          "id": "[resourceId('Microsoft.Network/virtualNetworkGateways', format('hubgw-{0}', createArray(0, div(parameters('copies'), 2))[1]))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworkGateways', format('hubgw-{0}', createArray(0, div(parameters('copies'), 2))[1]))]",
+        "[resourceId('Microsoft.Network/virtualNetworkGateways', format('hubgw-{0}', createArray(0, div(parameters('copies'), 2))[0]))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/connections",
+      "apiVersion": "2022-09-01",
+      "name": "conn-high-low",
+      "location": "[parameters('location')]",
+      "properties": {
+        "connectionType": "Vnet2Vnet",
+        "enableBgp": true,
+        "sharedKey": "tunnelKey",
+        "virtualNetworkGateway1": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworkGateways', format('hubgw-{0}', createArray(0, div(parameters('copies'), 2))[1]))]",
+          "properties": {}
+        },
+        "virtualNetworkGateway2": {
+          "properties": {},
+          "id": "[resourceId('Microsoft.Network/virtualNetworkGateways', format('hubgw-{0}', createArray(0, div(parameters('copies'), 2))[0]))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworkGateways', format('hubgw-{0}', createArray(0, div(parameters('copies'), 2))[1]))]",
+        "[resourceId('Microsoft.Network/virtualNetworkGateways', format('hubgw-{0}', createArray(0, div(parameters('copies'), 2))[0]))]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "hubgwpubip",
+        "count": "[length(createArray(0, div(parameters('copies'), 2)))]"
+      },
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2022-09-01",
+      "name": "[format('hubgwpip-{0}', createArray(0, div(parameters('copies'), 2))[copyIndex()])]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "tier": "Regional",
+        "name": "Standard"
+      },
+      "zones": [
+        "1",
+        "2",
+        "3"
+      ],
+      "properties": {
+        "publicIPAddressVersion": "IPv4",
+        "publicIPAllocationMethod": "Static"
+      }
+    },
+    {
+      "copy": {
+        "name": "nic",
+        "count": "[length(createArray(0, 1, 2, div(parameters('copies'), 2), add(div(parameters('copies'), 2), 1), add(div(parameters('copies'), 2), 2)))]"
+      },
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2019-09-01",
+      "name": "[format('{0}{1}', parameters('nicName'), createArray(0, 1, 2, div(parameters('copies'), 2), add(div(parameters('copies'), 2), 1), add(div(parameters('copies'), 2), 2))[copyIndex()])]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "subnet": {
+                "id": "[resourceId(parameters('rgName'), 'Microsoft.Network/virtualNetworks/subnets', format('{0}{1}', parameters('virtualNetworkName'), createArray(0, 1, 2, div(parameters('copies'), 2), add(div(parameters('copies'), 2), 1), add(div(parameters('copies'), 2), 2))[copyIndex()]), parameters('subnetName'))]"
+              },
+              "privateIPAllocationMethod": "Dynamic"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "virtualNetwork"
+      ]
+    },
+    {
+      "copy": {
+        "name": "vm",
+        "count": "[length(createArray(0, 1, 2, div(parameters('copies'), 2), add(div(parameters('copies'), 2), 1), add(div(parameters('copies'), 2), 2)))]"
+      },
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2018-10-01",
+      "name": "[format('{0}{1}', parameters('vmName'), createArray(0, 1, 2, div(parameters('copies'), 2), add(div(parameters('copies'), 2), 1), add(div(parameters('copies'), 2), 2))[copyIndex()])]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "group": "[if(less(createArray(0, 1, 2, div(parameters('copies'), 2), add(div(parameters('copies'), 2), 1), add(div(parameters('copies'), 2), 2))[copyIndex()], div(parameters('copies'), 2)), parameters('virtualNetworkTagGr1'), parameters('virtualNetworkTagGr2'))]"
+      },
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('vmsize')]"
+        },
+        "osProfile": {
+          "computerName": "[format('{0}{1}', parameters('vmName'), createArray(0, 1, 2, div(parameters('copies'), 2), add(div(parameters('copies'), 2), 1), add(div(parameters('copies'), 2), 2))[copyIndex()])]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "[variables('imagePublisher')]",
+            "offer": "[variables('imageOffer')]",
+            "sku": "[variables('imageSku')]",
+            "version": "latest"
+          },
+          "osDisk": {
+            "name": "[format('osDisk-{0}{1}', parameters('vmName'), createArray(0, 1, 2, div(parameters('copies'), 2), add(div(parameters('copies'), 2), 1), add(div(parameters('copies'), 2), 2))[copyIndex()])]",
+            "createOption": "FromImage"
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces', format('{0}{1}', parameters('nicName'), createArray(0, 1, 2, div(parameters('copies'), 2), add(div(parameters('copies'), 2), 1), add(div(parameters('copies'), 2), 2))[copyIndex()]))]"
+            }
+          ]
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": false
+          }
+        }
+      },
+      "dependsOn": [
+        "nic"
+      ]
+    },
+    {
+      "copy": {
+        "name": "vmName_Microsoft_Azure_NetworkWatcher",
+        "count": "[length(createArray(0, 1, 2, div(parameters('copies'), 2), add(div(parameters('copies'), 2), 1), add(div(parameters('copies'), 2), 2)))]"
+      },
+      "type": "Microsoft.Compute/virtualMachines/extensions",
+      "apiVersion": "2021-04-01",
+      "name": "[format('{0}{1}/Microsoft.Azure.NetworkWatcher', parameters('vmName'), createArray(0, 1, 2, div(parameters('copies'), 2), add(div(parameters('copies'), 2), 1), add(div(parameters('copies'), 2), 2))[copyIndex()])]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "publisher": "Microsoft.Azure.NetworkWatcher",
+        "type": "NetworkWatcherAgentWindows",
+        "typeHandlerVersion": "1.4",
+        "autoUpgradeMinorVersion": true
+      },
+      "dependsOn": [
+        "vm"
+      ]
+    },
+    {
+      "copy": {
+        "name": "vmName_IISExtension",
+        "count": "[length(createArray(0, 1, 2, div(parameters('copies'), 2), add(div(parameters('copies'), 2), 1), add(div(parameters('copies'), 2), 2)))]"
+      },
+      "type": "Microsoft.Compute/virtualMachines/extensions",
+      "apiVersion": "2021-04-01",
+      "name": "[format('{0}{1}/IISExtension', parameters('vmName'), createArray(0, 1, 2, div(parameters('copies'), 2), add(div(parameters('copies'), 2), 1), add(div(parameters('copies'), 2), 2))[copyIndex()])]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "autoUpgradeMinorVersion": true,
+        "publisher": "Microsoft.Compute",
+        "type": "CustomScriptExtension",
+        "typeHandlerVersion": "1.9",
+        "settings": {
+          "commandToExecute": "powershell -ExecutionPolicy Unrestricted Add-WindowsFeature Web-Server; powershell -ExecutionPolicy Unrestricted Add-Content -Path \"C:\\inetpub\\wwwroot\\Default.htm\" -Value $($env:computername)"
+        },
+        "protectedSettings": {}
+      },
+      "dependsOn": [
+        "vm"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkManagers",
+      "apiVersion": "2024-05-01",
+      "name": "AVNM-Demo",
+      "location": "[parameters('location')]",
+      "properties": {
+        "networkManagerScopeAccesses": [
+          "Connectivity",
+          "SecurityAdmin",
+          "SecurityUser",
+          "Routing"
+        ],
+        "networkManagerScopes": {
+          "subscriptions": [
+            "[subscription().id]"
+          ]
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/networkManagers/networkGroups",
+      "apiVersion": "2022-09-01",
+      "name": "[format('{0}/{1}', 'AVNM-Demo', 'production-networkgroup')]",
+      "properties": {},
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkManagers', 'AVNM-Demo')]",
+        "virtualNetwork"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkManagers/networkGroups",
+      "apiVersion": "2022-09-01",
+      "name": "[format('{0}/{1}', 'AVNM-Demo', 'development-networkgroup')]",
+      "properties": {},
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkManagers', 'AVNM-Demo')]",
+        "virtualNetwork"
+      ]
+    },
+    {
+      "copy": {
+        "name": "networkgr1_static",
+        "count": "[length(range(1, sub(div(parameters('copies'), 2), 1)))]"
+      },
+      "type": "Microsoft.Network/networkManagers/networkGroups/staticMembers",
+      "apiVersion": "2022-09-01",
+      "name": "[format('{0}/{1}/{2}', 'AVNM-Demo', 'production-networkgroup', format('production_{0}', range(1, sub(div(parameters('copies'), 2), 1))[copyIndex()]))]",
+      "properties": {
+        "resourceId": "[resourceId('Microsoft.Network/virtualNetworks', format('{0}{1}', parameters('virtualNetworkName'), range(0, parameters('copies'))[range(1, sub(div(parameters('copies'), 2), 1))[copyIndex()]]))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'production-networkgroup')]",
+        "virtualNetwork"
+      ]
+    },
+    {
+      "copy": {
+        "name": "networkgr2_static",
+        "count": "[length(range(add(div(parameters('copies'), 2), 1), sub(div(parameters('copies'), 2), 1)))]"
+      },
+      "type": "Microsoft.Network/networkManagers/networkGroups/staticMembers",
+      "apiVersion": "2022-09-01",
+      "name": "[format('{0}/{1}/{2}', 'AVNM-Demo', 'development-networkgroup', format('development_{0}', sub(range(add(div(parameters('copies'), 2), 1), sub(div(parameters('copies'), 2), 1))[copyIndex()], div(parameters('copies'), 2))))]",
+      "properties": {
+        "resourceId": "[resourceId('Microsoft.Network/virtualNetworks', format('{0}{1}', parameters('virtualNetworkName'), range(0, parameters('copies'))[range(add(div(parameters('copies'), 2), 1), sub(div(parameters('copies'), 2), 1))[copyIndex()]]))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'development-networkgroup')]",
+        "networkgr1_static",
+        "virtualNetwork"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkManagers/connectivityConfigurations",
+      "apiVersion": "2022-09-01",
+      "name": "[format('{0}/{1}', 'AVNM-Demo', 'production-hubspokemesh')]",
+      "properties": {
+        "appliesToGroups": [
+          {
+            "groupConnectivity": "DirectlyConnected",
+            "isGlobal": "True",
+            "networkGroupId": "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'production-networkgroup')]",
+            "useHubGateway": "True"
+          }
+        ],
+        "connectivityTopology": "HubAndSpoke",
+        "hubs": [
+          {
+            "resourceType": "Microsoft.Network/virtualNetworks",
+            "resourceId": "[resourceId('Microsoft.Network/virtualNetworks', format('{0}{1}', parameters('virtualNetworkName'), range(0, parameters('copies'))[0]))]"
+          }
+        ],
+        "deleteExistingPeering": "True",
+        "isGlobal": "True"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkManagers', 'AVNM-Demo')]",
+        "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'production-networkgroup')]",
+        "virtualNetwork"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkManagers/connectivityConfigurations",
+      "apiVersion": "2022-09-01",
+      "name": "[format('{0}/{1}', 'AVNM-Demo', 'development-hubspokemesh')]",
+      "properties": {
+        "appliesToGroups": [
+          {
+            "groupConnectivity": "DirectlyConnected",
+            "isGlobal": "True",
+            "networkGroupId": "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'development-networkgroup')]",
+            "useHubGateway": "True"
+          }
+        ],
+        "connectivityTopology": "HubAndSpoke",
+        "hubs": [
+          {
+            "resourceType": "Microsoft.Network/virtualNetworks",
+            "resourceId": "[resourceId('Microsoft.Network/virtualNetworks', format('{0}{1}', parameters('virtualNetworkName'), range(0, parameters('copies'))[div(parameters('copies'), 2)]))]"
+          }
+        ],
+        "deleteExistingPeering": "True",
+        "isGlobal": "True"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkManagers', 'AVNM-Demo')]",
+        "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'development-networkgroup')]",
+        "virtualNetwork"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkManagers/securityAdminConfigurations",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', 'AVNM-Demo', 'secadminrule')]",
+      "properties": {
+        "networkGroupAddressSpaceAggregationOption": "Manual"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkManagers', 'AVNM-Demo')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkManagers/securityAdminConfigurations/ruleCollections",
+      "apiVersion": "2022-07-01",
+      "name": "[format('{0}/{1}/{2}', 'AVNM-Demo', 'secadminrule', 'secadminrulecollall')]",
+      "properties": {
+        "appliesToGroups": [
+          {
+            "networkGroupId": "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'production-networkgroup')]"
+          },
+          {
+            "networkGroupId": "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'development-networkgroup')]"
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'development-networkgroup')]",
+        "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'production-networkgroup')]",
+        "[resourceId('Microsoft.Network/networkManagers/securityAdminConfigurations', 'AVNM-Demo', 'secadminrule')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkManagers/securityAdminConfigurations/ruleCollections/rules",
+      "apiVersion": "2022-04-01-preview",
+      "name": "[format('{0}/{1}/{2}/{3}', 'AVNM-Demo', 'secadminrule', 'secadminrulecollall', 'no-internet')]",
+      "kind": "Custom",
+      "properties": {
+        "priority": 1000,
+        "access": "Deny",
+        "direction": "Outbound",
+        "protocol": "Any",
+        "sourcePortRanges": [
+          "0-65535"
+        ],
+        "destinationPortRanges": [
+          "0-65535"
+        ],
+        "sources": [
+          {
+            "addressPrefixType": "IPPrefix",
+            "addressPrefix": "*"
+          }
+        ],
+        "destinations": [
+          {
+            "addressPrefixType": "IPPrefix",
+            "addressPrefix": "*"
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkManagers/securityAdminConfigurations/ruleCollections', 'AVNM-Demo', 'secadminrule', 'secadminrulecollall')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkManagers/securityAdminConfigurations/ruleCollections",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}/{2}', 'AVNM-Demo', 'secadminrule', 'secadminrulecoll-production')]",
+      "properties": {
+        "appliesToGroups": [
+          {
+            "networkGroupId": "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'production-networkgroup')]"
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'production-networkgroup')]",
+        "[resourceId('Microsoft.Network/networkManagers/securityAdminConfigurations', 'AVNM-Demo', 'secadminrule')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkManagers/securityAdminConfigurations/ruleCollections/rules",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}/{2}/{3}', 'AVNM-Demo', 'secadminrule', 'secadminrulecoll-production', 'allowwithinprod')]",
+      "kind": "Custom",
+      "properties": {
+        "priority": 300,
+        "access": "AlwaysAllow",
+        "direction": "Outbound",
+        "protocol": "Any",
+        "sourcePortRanges": [
+          "0-65535"
+        ],
+        "destinationPortRanges": [
+          "0-65535"
+        ],
+        "sources": [
+          {
+            "addressPrefixType": "NetworkGroup",
+            "addressPrefix": "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'production-networkgroup')]"
+          }
+        ],
+        "destinations": [
+          {
+            "addressPrefixType": "NetworkGroup",
+            "addressPrefix": "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'production-networkgroup')]"
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'production-networkgroup')]",
+        "[resourceId('Microsoft.Network/networkManagers/securityAdminConfigurations/ruleCollections', 'AVNM-Demo', 'secadminrule', 'secadminrulecoll-production')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkManagers/securityAdminConfigurations/ruleCollections/rules",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}/{2}/{3}', 'AVNM-Demo', 'secadminrule', 'secadminrulecoll-production', 'allowprodtodev')]",
+      "kind": "Custom",
+      "properties": {
+        "priority": 300,
+        "access": "AlwaysAllow",
+        "direction": "Outbound",
+        "protocol": "Any",
+        "sourcePortRanges": [
+          "0-65535"
+        ],
+        "destinationPortRanges": [
+          "0-65535"
+        ],
+        "sources": [
+          {
+            "addressPrefixType": "NetworkGroup",
+            "addressPrefix": "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'production-networkgroup')]"
+          }
+        ],
+        "destinations": [
+          {
+            "addressPrefixType": "NetworkGroup",
+            "addressPrefix": "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'development-networkgroup')]"
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'development-networkgroup')]",
+        "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'production-networkgroup')]",
+        "[resourceId('Microsoft.Network/networkManagers/securityAdminConfigurations/ruleCollections', 'AVNM-Demo', 'secadminrule', 'secadminrulecoll-production')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkManagers/securityAdminConfigurations/ruleCollections",
+      "apiVersion": "2022-09-01",
+      "name": "[format('{0}/{1}/{2}', 'AVNM-Demo', 'secadminrule', 'secadminrulecoll-development')]",
+      "properties": {
+        "appliesToGroups": [
+          {
+            "networkGroupId": "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'development-networkgroup')]"
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'development-networkgroup')]",
+        "[resourceId('Microsoft.Network/networkManagers/securityAdminConfigurations', 'AVNM-Demo', 'secadminrule')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkManagers/securityAdminConfigurations/ruleCollections/rules",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}/{2}/{3}', 'AVNM-Demo', 'secadminrule', 'secadminrulecoll-development', 'allowwithindev')]",
+      "kind": "Custom",
+      "properties": {
+        "priority": 300,
+        "access": "AlwaysAllow",
+        "direction": "Outbound",
+        "protocol": "Any",
+        "sourcePortRanges": [
+          "0-65535"
+        ],
+        "destinationPortRanges": [
+          "0-65535"
+        ],
+        "sources": [
+          {
+            "addressPrefixType": "NetworkGroup",
+            "addressPrefix": "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'development-networkgroup')]"
+          }
+        ],
+        "destinations": [
+          {
+            "addressPrefixType": "NetworkGroup",
+            "addressPrefix": "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'development-networkgroup')]"
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'development-networkgroup')]",
+        "[resourceId('Microsoft.Network/networkManagers/securityAdminConfigurations/ruleCollections', 'AVNM-Demo', 'secadminrule', 'secadminrulecoll-development')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkManagers/securityAdminConfigurations/ruleCollections/rules",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}/{2}/{3}', 'AVNM-Demo', 'secadminrule', 'secadminrulecoll-development', 'allowdevtoprod')]",
+      "kind": "Custom",
+      "properties": {
+        "priority": 300,
+        "access": "AlwaysAllow",
+        "direction": "Outbound",
+        "protocol": "Any",
+        "sourcePortRanges": [
+          "0-65535"
+        ],
+        "destinationPortRanges": [
+          "0-65535"
+        ],
+        "sources": [
+          {
+            "addressPrefixType": "NetworkGroup",
+            "addressPrefix": "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'development-networkgroup')]"
+          }
+        ],
+        "destinations": [
+          {
+            "addressPrefixType": "NetworkGroup",
+            "addressPrefix": "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'production-networkgroup')]"
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'development-networkgroup')]",
+        "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'production-networkgroup')]",
+        "[resourceId('Microsoft.Network/networkManagers/securityAdminConfigurations/ruleCollections', 'AVNM-Demo', 'secadminrule', 'secadminrulecoll-development')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkManagers/routingConfigurations",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}', 'AVNM-Demo', 'routingconfig')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkManagers', 'AVNM-Demo')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkManagers/routingConfigurations/ruleCollections",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}/{2}', 'AVNM-Demo', 'routingconfig', 'routingrulecoll-production')]",
+      "properties": {
+        "appliesTo": [
+          {
+            "networkGroupId": "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'production-networkgroup')]"
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'production-networkgroup')]",
+        "[resourceId('Microsoft.Network/networkManagers/routingConfigurations', 'AVNM-Demo', 'routingconfig')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkManagers/routingConfigurations/ruleCollections",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}/{2}', 'AVNM-Demo', 'routingconfig', 'routingrulecoll-development')]",
+      "properties": {
+        "appliesTo": [
+          {
+            "networkGroupId": "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'development-networkgroup')]"
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkManagers/networkGroups', 'AVNM-Demo', 'development-networkgroup')]",
+        "[resourceId('Microsoft.Network/networkManagers/routingConfigurations', 'AVNM-Demo', 'routingconfig')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkManagers/routingConfigurations/ruleCollections/rules",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}/{2}/{3}', 'AVNM-Demo', 'routingconfig', 'routingrulecoll-production', 'routingrule-prod-to-dev')]",
+      "properties": {
+        "destination": {
+          "destinationAddress": "10.0.16.0/20",
+          "type": "AddressPrefix"
+        },
+        "nextHop": {
+          "nextHopType": "VirtualAppliance",
+          "nextHopAddress": "[reference(resourceId('Microsoft.Network/azureFirewalls', 'hubfirewall-0'), '2024-05-01').ipConfigurations[0].properties.privateIPAddress]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/azureFirewalls', 'hubfirewall-0')]",
+        "[resourceId('Microsoft.Network/networkManagers/routingConfigurations/ruleCollections', 'AVNM-Demo', 'routingconfig', 'routingrulecoll-production')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/networkManagers/routingConfigurations/ruleCollections/rules",
+      "apiVersion": "2024-05-01",
+      "name": "[format('{0}/{1}/{2}/{3}', 'AVNM-Demo', 'routingconfig', 'routingrulecoll-development', 'routingrule-dev-to-prod')]",
+      "properties": {
+        "destination": {
+          "destinationAddress": "10.0.0.0/20",
+          "type": "AddressPrefix"
+        },
+        "nextHop": {
+          "nextHopType": "VirtualAppliance",
+          "nextHopAddress": "[reference(resourceId('Microsoft.Network/azureFirewalls', format('hubfirewall-{0}', div(parameters('copies'), 2))), '2024-05-01').ipConfigurations[0].properties.privateIPAddress]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/azureFirewalls', format('hubfirewall-{0}', div(parameters('copies'), 2)))]",
+        "[resourceId('Microsoft.Network/networkManagers/routingConfigurations/ruleCollections', 'AVNM-Demo', 'routingconfig', 'routingrulecoll-development')]"
+      ]
+    }
+  ]
+}

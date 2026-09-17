@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AVNM Demo — Rehearsal Script</title>
+<style>
+  :root {
+    --blue: #0078D4; --blue-bg: #CFE4FA;
+    --green: #107C10; --green-bg: #DFF6DD;
+    --red: #D13438; --red-bg: #FDE7E9;
+    --orange: #F7630C; --orange-bg: #FFF4CE;
+    --purple: #5C2D91; --purple-bg: #E8DAEF;
+    --gray-bg: #F3F2F1;
+  }
+  body { font-family: Segoe UI, Arial, sans-serif; max-width: 980px; margin: 0 auto; padding: 24px 32px 80px; color: #1e1e1e; line-height: 1.5; font-size: 16px; }
+  h1 { font-size: 34px; color: var(--blue); border-bottom: 3px solid var(--blue); padding-bottom: 8px; }
+  h2 { font-size: 22px; color: #fff; background: var(--blue); padding: 8px 14px; border-radius: 6px; margin-top: 40px; }
+  h2 .num { display:inline-block; background:#fff; color:var(--blue); border-radius:50%; width:28px; height:28px; text-align:center; line-height:28px; font-weight:bold; margin-right:10px; }
+  h3 { font-size: 18px; color: var(--purple); }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0 20px; }
+  th, td { border: 1px solid #ccc; padding: 8px 10px; text-align: left; font-size: 14px; }
+  th { background: var(--gray-bg); }
+  code, pre { font-family: Cascadia Code, Consolas, monospace; }
+  pre { background: #1e1e1e; color: #d4d4d4; padding: 14px 16px; border-radius: 6px; overflow-x: auto; font-size: 13.5px; }
+  pre .comment { color: #6a9955; }
+  .callout { background: var(--blue-bg); padding: 10px 16px; border-radius: 6px; margin: 14px 0; }
+  .callout.talk { background: var(--purple-bg); }
+  .callout.talk::before { content: "💬 Talking point: "; font-weight: bold; }
+  .success { color: var(--green); font-weight: bold; }
+  .fail { color: var(--red); font-weight: bold; }
+  .pill { display:inline-block; padding:2px 10px; border-radius: 12px; font-size:12px; font-weight:bold; }
+  .pill.allow { background: var(--green-bg); color: var(--green); }
+  .pill.deny { background: var(--red-bg); color: var(--red); }
+  .top-info { background: var(--gray-bg); padding: 12px 18px; border-radius: 8px; margin-bottom: 20px; }
+  .top-info b { color: var(--blue); }
+  nav { background: var(--gray-bg); padding: 14px 20px; border-radius: 8px; margin: 20px 0; }
+  nav a { color: var(--blue); text-decoration: none; }
+  nav a:hover { text-decoration: underline; }
+  nav ol { margin: 6px 0 0; padding-left: 22px; }
+  footer { margin-top: 50px; padding-top: 16px; border-top: 2px solid var(--blue); color: #555; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>AVNM Demo — Rehearsal Script</h1>
+
+<div class="top-info">
+  <b>Subscription:</b> &lt;your-subscription-id&gt; &nbsp;|&nbsp;
+  <b>Resource Group:</b> AVNM &nbsp;|&nbsp;
+  <b>Network Manager:</b> AVNM-Demo &nbsp;|&nbsp;
+  <b>Region:</b> swedencentral
+</div>
+
+<div class="callout"><b>Before you start:</b><br>
+<pre>az account set --subscription &lt;your-subscription-id&gt;</pre>
+VM login (all VMs): <b>Username:</b> <code>AzureAdmin</code> &nbsp;|&nbsp; <b>Password:</b> the value you supplied for <code>adminPassword</code> at deployment time<br>
+Connect via Bastion (portal → VM → Connect → Bastion → native client or browser) using these credentials.
+</div>
+
+<div class="callout talk"><b>Key insight for this demo:</b> AVNM mesh (<code>DirectlyConnected</code>) connectivity does <b>not</b> create classic VNet peerings — it creates a distinct construct called a <b>connected group</b>. Meshed VNets show <b>no entry</b> under Peerings; the connection only appears in effective routes as next-hop type <b>ConnectedGroup</b>. Don't check the Peerings blade to prove mesh — check effective routes instead.</div>
+
+<h3>Quick reference — live inventory</h3>
+<table>
+<tr><th>Role</th><th>Name</th><th>Private IP</th></tr>
+<tr><td>VM — Hub1</td><td>VM-0</td><td>10.0.0.4</td></tr>
+<tr><td>VM — Non-trusted Hub1</td><td>VM-1</td><td>10.0.1.4</td></tr>
+<tr><td>VM — Trusted Hub1</td><td>VM-2</td><td>10.0.2.4</td></tr>
+<tr><td>VM — Hub2</td><td>VM-16</td><td>10.0.16.4</td></tr>
+<tr><td>VM — Non-trusted Hub2</td><td>VM-17</td><td>10.0.17.4</td></tr>
+<tr><td>VM — Trusted Hub2</td><td>VM-18</td><td>10.0.18.4</td></tr>
+<tr><td>Firewall Hub1</td><td>hubfirewall-0</td><td>10.0.0.68</td></tr>
+<tr><td>Firewall Hub2</td><td>hubfirewall-16</td><td>10.0.16.68</td></tr>
+<tr><td>Bastion Hub1</td><td>hubbastion-0</td><td>—</td></tr>
+<tr><td>Bastion Hub2</td><td>hubbastion-16</td><td>—</td></tr>
+<tr><td>VPN GW (Production)</td><td>hubgw-0</td><td>—</td></tr>
+<tr><td>VPN GW (on-prem sim)</td><td>hubgw-onprem</td><td>—</td></tr>
+<tr><td>VPN connections</td><td>conn-onprem-prod / conn-prod-onprem</td><td>—</td></tr>
+<tr><td>NSG (shared)</td><td>anvm-nsg</td><td>deny outbound RFC1918, priority 150</td></tr>
+<tr><td>VM login</td><td>AzureAdmin</td><td>Password: value set at deployment time</td></tr>
+</table>
+
+<h3>Security Admin rules (already configured — no live editing needed)</h3>
+<table>
+<tr><th>Collection</th><th>Rule</th><th>Access</th><th>Direction</th><th>Priority</th></tr>
+<tr><td>secadminrulecollall</td><td>no-internet</td><td><span class="pill deny">Deny</span></td><td>Outbound</td><td>1000</td></tr>
+<tr><td>secadminrulecoll-production</td><td>allowwithinprod</td><td><span class="pill allow">AlwaysAllow</span></td><td>Outbound</td><td>300</td></tr>
+<tr><td>secadminrulecoll-development</td><td>allowwithindev</td><td><span class="pill allow">AlwaysAllow</span></td><td>Outbound</td><td>320</td></tr>
+<tr><td>secadminrulecoll-trusted</td><td>allowtrustedmesh-in</td><td><span class="pill allow">AlwaysAllow</span></td><td>Inbound</td><td>200</td></tr>
+<tr><td>secadminrulecoll-trusted</td><td>allowtrustedmesh-out</td><td><span class="pill allow">AlwaysAllow</span></td><td>Outbound</td><td>210</td></tr>
+</table>
+
+<nav>
+<b>Scenario index</b>
+<ol>
+<li><a href="#s1">AVNM Topology Overview</a></li>
+<li><a href="#s2">Trusted Mesh vs Non-trusted Hub-and-Spoke</a></li>
+<li><a href="#s3">Firewall as Router / Transitive Routing</a></li>
+<li><a href="#s4">Security Admin Rules Supersede NSG</a></li>
+<li><a href="#s5">Dual-Hub Symmetry</a></li>
+<li><a href="#s6">Global Backup Mesh / DR</a></li>
+<li><a href="#s7">Scoped On-Prem VPN Connectivity</a></li>
+<li><a href="#s8">Live Connectivity Test Matrix</a></li>
+</ol>
+</nav>
+
+<h2 id="s1"><span class="num">1</span>AVNM Topology Overview <small>(2 min)</small></h2>
+<p>Portal: <b>Network Manager <code>AVNM-Demo</code></b> → show blades: Network groups (4), Connectivity configurations (3), Security admin configurations (1).<br>
+Show the architecture diagram (<code>avnm-architecture.png</code>) side-by-side: 2 hub-spoke regions (Sweden Central, both logically "Hub1"/"Hub2"), each split into Trusted (meshed) and Non-trusted (hub-and-spoke) groups, plus a global backup mesh.</p>
+<div class="callout talk">One AVNM instance centrally governs connectivity and security for 32 VNets across two simulated regions — no manual peering, no per-VNet NSG management.</div>
+
+<h2 id="s2"><span class="num">2</span>Trusted Mesh vs Non-trusted Hub-and-Spoke <small>(5 min)</small></h2>
+<pre><span class="comment"># Trusted VNets are fully meshed — direct VNet-to-VNet route, no hub hop</span>
+az network nic show-effective-route-table --name VMNic-2 -g AVNM -o table</pre>
+<p>Look for routes to 10.0.8.0/24, 10.0.9.0/24, 10.0.10.0/24 (other Hub1-trusted mesh members) <b>and</b> 10.0.18.0/24 (Hub2-trusted, via the global backup mesh) all with <b>next hop type = ConnectedGroup</b> — this is the mesh construct, not a VNet peering.</p>
+<pre><span class="comment"># Non-trusted VNets only reach the hub — no spoke-to-spoke route</span>
+az network nic show-effective-route-table --name VMNic-1 -g AVNM -o table</pre>
+<p>Look for a route to another non-trusted spoke going via <b>VirtualAppliance (firewall)</b> or missing entirely if scope is hub-only.</p>
+<p><b>Live test (Bastion → VM-2):</b></p>
+<pre>curl 10.0.18.4   <span class="comment"># trusted-hub1 -> trusted-hub2, direct mesh, should succeed</span></pre>
+
+<h2 id="s3"><span class="num">3</span>Firewall as Router / Transitive Routing <small>(5 min)</small></h2>
+<p>Portal: <b>hubfirewall-0</b> → Rules / <b>Firewall Manager</b> → show a network rule allowing spoke↔spoke traffic through the hub.</p>
+<pre>az network nic show-effective-route-table --name VMNic-1 -g AVNM -o table</pre>
+<p>Show route to a non-trusted destination pointing to <b>10.0.0.68 (hubfirewall-0)</b> as next hop — this is the routing-intent/firewall-as-router feature that didn't exist when this lab was first built.</p>
+<div class="callout talk">Previously this required a VPN or manual UDRs for transitive routing. Now the firewall in the hub natively routes spoke-to-spoke traffic — enabled via Virtual Network Manager routing configuration.</div>
+
+<h2 id="s4"><span class="num">4</span>Security Admin Rules Supersede NSG <small>(5 min) — the strongest moment</small></h2>
+<pre><span class="comment"># Show the NSG rule that WOULD block this traffic</span>
+az network nsg rule list -g AVNM --nsg-name anvm-nsg -o table
+<span class="comment"># denyRFC1918-out: Deny, Outbound, priority 150, destination 10.0.0.0/8 172.16.0.0/12 192.168.0.0/24</span></pre>
+<pre><span class="comment"># Show the effective NSG on a trusted VM's NIC — note AVNM admin rule appears ABOVE the NSG rule</span>
+az network nic list-effective-nsg --name VMNic-2 -g AVNM -o table</pre>
+<p><b>Live test (from Bastion on VM-2, trusted-hub1):</b></p>
+<pre>curl 10.0.18.4   <span class="comment"># trusted-hub2 — <span style="color:#4ec9b0">SUCCEEDS</span> despite NSG deny, because AlwaysAllow admin rule wins</span></pre>
+<p><b>Live test (from Bastion on VM-1, non-trusted-hub1):</b></p>
+<pre>curl 10.0.17.4   <span class="comment"># non-trusted-hub2 — should <span style="color:#f48771">NOT</span> reach directly (no mesh + regular NSG deny applies, no AlwaysAllow override)</span></pre>
+<div class="callout talk"><code>AlwaysAllow</code> in a Security Admin rule cannot be overridden by any NSG downstream — this is how central security teams enforce non-negotiable policy across the whole org, while still letting app teams manage their own NSGs for everything else.</div>
+
+<h2 id="s5"><span class="num">5</span>Dual-Hub Symmetry <small>(2 min)</small></h2>
+<p>Show that Hub1 and Hub2 are configured identically (Trusted/Non-trusted groups, firewall router, same admin rules apply org-wide) — demonstrates the model scales to multi-region without per-region policy duplication.</p>
+<pre>az network nic show-effective-route-table --name VMNic-18 -g AVNM -o table   <span class="comment"># trusted-hub2, compare to VMNic-2 output</span></pre>
+<p>Same shape as VMNic-2: <b>ConnectedGroup</b> routes to the other Hub2-trusted mesh members (10.0.25/26/27.0/24), plus a plain <b>VNetPeering</b> route to its own hub (10.0.16.0/24) — identical pattern, different region.</p>
+
+<h2 id="s6"><span class="num">6</span>Global Backup Mesh / DR <small>(3 min)</small></h2>
+<p>Portal: <b>Connectivity configurations</b> → <code>global-backup-mesh</code> → show it spans all 4 groups (Trusted+Non-trusted × Hub1+Hub2).</p>
+<div class="callout talk">In addition to the day-to-day hub-and-spoke/mesh design, we layer a global mesh connectivity configuration for disaster-recovery scenarios — every VNet can reach every other VNet directly if the primary topology is unavailable, without re-architecting.</div>
+<p>Proof it's live: VMNic-2 (Hub1-trusted) shows a <b>ConnectedGroup</b> route to 10.0.18.0/24 — that's the Hub2-trusted VNet, reachable only because <code>global-backup-mesh</code> is deployed cross-hub, independent of the regional production mesh.</p>
+
+<h2 id="s7"><span class="num">7</span>Scoped On-Prem VPN Connectivity <small>(3 min)</small></h2>
+<p>Portal: <b>hubgw-0</b> (kept in Production/Hub1) ← <b>conn-prod-onprem</b> → <b>hubgw-onprem</b> (new simulated on-prem VNet) ← <b>conn-onprem-prod</b>.</p>
+<pre>az network vpn-connection show -g AVNM -n conn-prod-onprem --query connectionStatus -o tsv
+az network vpn-connection show -g AVNM -n conn-onprem-prod --query connectionStatus -o tsv</pre>
+<div class="callout talk">The VPN gateway is scoped to the Production network group as a whole — both trusted-hub1 and non-trusted-hub1 inherit the gateway route (<code>useHubGateway</code>), since both sit under Hub1/Production. Development/Hub2 groups have no path to on-prem at all — the gateway simply isn't shared there. This is deliberate segmentation at the network-group level, not per-VNet.</div>
+
+<h2 id="s8"><span class="num">8</span>Live Connectivity Test Matrix <small>(5 min, run from Bastion)</small></h2>
+<table>
+<tr><th>From</th><th>To</th><th>Expected</th></tr>
+<tr><td>VM-2 (trusted-hub1, 10.0.2.4)</td><td>VM-18 (trusted-hub2, 10.0.18.4)</td><td class="success">✅ direct mesh (ConnectedGroup)</td></tr>
+<tr><td>VM-1 (non-trusted-hub1, 10.0.1.4)</td><td>VM-0 (hub1, 10.0.0.4)</td><td class="success">✅ via hub (VNetPeering)</td></tr>
+<tr><td>VM-1 (non-trusted-hub1)</td><td>VM-17 (non-trusted-hub2)</td><td class="fail">❌ no route (isolated spokes)</td></tr>
+<tr><td>VM-2 (trusted-hub1)</td><td>on-prem (via VPN)</td><td class="success">✅ Hub1/Production is gateway-enabled</td></tr>
+<tr><td>VM-1 (non-trusted-hub1)</td><td>on-prem (via VPN)</td><td class="success">✅ also reachable — whole Hub1/Production group shares the gateway</td></tr>
+<tr><td>VM-17 (non-trusted-hub2)</td><td>on-prem</td><td class="fail">❌ Hub2/Development has no gateway route at all</td></tr>
+</table>
+<p>Connect via <b>Bastion → hubbastion-0</b> (for Hub1 VMs) or <b>hubbastion-16</b> (for Hub2 VMs), RDP/SSH into the VM, then <code>curl &lt;target-ip&gt;</code> or <code>Test-NetConnection &lt;target-ip&gt;</code>.</p>
+
+<footer>
+<b>Closing:</b> Recap the diagram, emphasize: single-pane governance (AVNM), transitive routing via firewall (modern replacement for the old VPN-mesh pattern), AlwaysAllow security admin rules for non-negotiable policy, and DR-ready global mesh — all centrally managed, zero manual peering.
+</footer>
+
+</body>
+</html>
