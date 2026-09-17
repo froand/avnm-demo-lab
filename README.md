@@ -1,230 +1,225 @@
-# AVNM Demo Lab
+# Azure Virtual Network Manager (AVNM) Demo Lab
 
-This is a lab to demonstrate and experiment with [Azure Virtual Network Manager](https://learn.microsoft.com/en-us/azure/virtual-network-manager/overview).
+A hands-on Azure Virtual Network Manager environment for demonstrating centrally managed
+connectivity and security across a multi-hub, multi-zone network estate — **without manual VNet
+peering**. Deploy the base infrastructure with one Bicep template, then apply the AVNM
+configuration described below to reproduce the exact live demo topology used in this repo.
 
-## Components
-The lab consists of following elements:
-- A set of VNETs:
-  - Quantity is controlled by the `copies` parameter, (default: 20).
-- Network Security Group:
-  - Applied to the subnet `vmSubnet` in each VNET.
-  - Contains an outbound rule denying traffic to private (RFC1918) ranges.
-- Windows Server VMs:
-  - In VNETs 0, 1, 2, and `copies`/2 (default: 10), `copies`/2+1 (11), `copies`/2+2 (12).
-  - Each VM runs a basic webpage that returns the VM name.
-- Bastion Hosts:
-  - In VNETs 0 and `copies/2` (10).
-- An AVNM instance `avnm`, scoped to the subscription.
-- Network Groups:
-  -  `production-networkgroup` contains VNETs 1 - `copies`/2-1 (9).
-  -  `development-networkgroup` contains `copies`/2+1 (11) - `copies` (20).
-- Network Configurations `production-hubspokemesh` and `development-hubspokemesh`, implementing a Hub&spoke with DirectConnectivity topology for the respective Network Groups.
-- Security Configuration `secadminrule`,
-  - Rule Collections `secadminrulecoll-production` and `secadminrulecoll-development`, each containing Allow rules, permitting communication within the respective Network Groups only (i.e. Production can only send traffic to Production, not to Development)
-  - Rule Collection `no-internet` blocking outbound traffic from both Network Groups.
-- VNET Gateways in VNETs 0 and `copies/2` (10) (the hubs of the Hub&spoke configurations for both Network Groups), with a VPN tunnel with BGP between them.
+> Sanitize before you share: this README uses `<your-subscription-id>` as a placeholder and never
+> includes real passwords or public IPs. Replace with your own values.
 
-![image](images/avnmdemo.png)
+## Architecture
 
-## Lab Deployment
+![AVNM demo architecture](images/avnm-architecture.png)
 
-Log in to Azure Cloud Shell at https://shell.azure.com/ and select Bash.
+The lab simulates **two hubs** (`Hub1` and `Hub2` — logically two regions/environments, both
+deployed in `swedencentral` for capacity reasons, kept separate purely by naming and network-group
+membership). Each hub is split into a **Trusted** zone (fully meshed) and a **Non-trusted** zone
+(hub-and-spoke only, routed through that hub's own Azure Firewall). A **global backup mesh**
+directly connects the two Trusted zones across hubs for disaster-recovery, and a simulated
+on-premises network reaches only Hub1 over site-to-site VPN.
 
-Ensure Azure CLI and extensions are up to date:
-  
-`az upgrade --yes`
-  
-If necessary select your target subscription:
-  
-`az account set --subscription <Name or ID of subscription>`
-  
-Clone the  GitHub repository:
+### The 5 network groups
 
-`git clone https://github.com/mddazure/avnm-demo`
+| Network group | Members | Connectivity | Notes |
+|---|---|---|---|
+| `trusted-hub1-networkgroup` | `anm-vnet-2, 8, 9, 10` | **Mesh** (`production-hubspokemesh`, `useHubGateway=true`, hub `anm-vnet-0`) | Full any-to-any peering between all 4 VNets |
+| `nontrusted-hub1-networkgroup` | `anm-vnet-1, 3–7, 11–15` (11 VNets) | **Hub & Spoke** (same config, hub `anm-vnet-0`) | Spoke↔spoke traffic routed through `hubfirewall-0`, no mesh |
+| `trusted-hub2-networkgroup` | `anm-vnet-18, 25, 26, 27` | **Mesh** (`development-hubspokemesh`, hub `anm-vnet-16`) | Mirrors Hub1's trusted group in the second hub |
+| `nontrusted-hub2-networkgroup` | `anm-vnet-17, 19–24, 28–31` (11 VNets) | **Hub & Spoke** (hub `anm-vnet-16`) | Routed through `hubfirewall-16`, no mesh — mirrors Hub1's non-trusted group |
+| `global-backup-networkgroup` | `anm-vnet-2` + `anm-vnet-18` (one Trusted VNet per hub) | **Mesh** (`global-backup-mesh`, global scope, no hub) | Cross-hub / cross-region DR link between the two Trusted zones |
 
-Change directory:
+Each hub has **its own Azure Firewall** (`hubfirewall-0` in Hub1, `hubfirewall-16` in Hub2) acting
+as the router for its Non-trusted spokes' transitive traffic — the modern
+routing-configuration/firewall-as-router replacement for a VPN shortcut between environments.
 
-`cd ./avnm-demo`
+**Simulated on-premises**: `anm-vnet-onprem` (`10.100.0.0/24`) with VPN gateway `hubgw-onprem`,
+connected via site-to-site VPN (BGP) **only to Hub1** (`hubgw-0`). Hub2 has no VPN gateway — this
+is deliberate segmentation: only the group that needs hybrid connectivity gets it.
 
-Create a new resource group:
+### Security Admin rules (`secadminrule` configuration, 4 collections)
 
-`az group create --name {rgname} --location {location}`
+| Rule collection | Rule | Effect | Scope |
+|---|---|---|---|
+| `secadminrulecollall` | `no-internet` | **Deny**, outbound, priority 1000 | All 4 hub network groups (deny-all baseline) |
+| `secadminrulecoll-production` | `allowwithinprod` | Allow, priority 300 | `nontrusted-hub1-networkgroup` |
+| `secadminrulecoll-development` | `allowwithindev` | Allow, priority 320 | `nontrusted-hub2-networkgroup` |
+| `secadminrulecoll-trusted` | `allowtrustedmesh-in` / `-out` (200/210) | **AlwaysAllow**, both directions | `trusted-hub1-networkgroup` **and** `trusted-hub2-networkgroup` |
 
-Deploy the bicep template:
+`secadminrulecoll-trusted` is the key demo rule: **`AlwaysAllow` cannot be overridden by any NSG
+downstream**, which is how a central platform team enforces non-negotiable policy while app teams
+keep managing their own NSGs for everything else.
 
-`az deployment group create -g {rgname} --template-file templates/main-hub-s2s.bicep`
+> **Key insight:** AVNM Mesh (`DirectlyConnected`) connectivity does **not** create classic VNet
+> peering objects — it creates a **connected group**. Meshed VNets show nothing under the
+> Peerings blade or `az network vnet peering list`; confirm mesh connectivity via effective routes,
+> where it shows next-hop type **`ConnectedGroup`** (not "VNet peering").
 
-## AVNM Configuration Deployment
-The Network- and Security Configurations need to be deployed to take effect. This may be achieved from the Network Manager page in the portal, under Settings -> Deployments -> Deploy configurations. 
-Select Configurations to deploy and target region:
+## What gets deployed
 
-![image](images/selectdeployment.png)
+| Resource | Count | Notes |
+|---|---|---|
+| Virtual Networks | 32 (`anm-vnet-0` … `anm-vnet-31`) | `/24` each, `10.0.{n}.0/24` |
+| Virtual Machines | 6 (`VM-0/1/2` in Hub1, `VM-16/17/18` in Hub2) | One per hub, non-trusted spoke, and trusted spoke — enough to demo every scenario |
+| Azure Firewall (Premium) | 2 | `hubfirewall-0` (Hub1), `hubfirewall-16` (Hub2) |
+| Azure Bastion | 2 | `hubbastion-0`, `hubbastion-16` — RDP/SSH access without public IPs on the VMs |
+| VPN Gateway | 2 | `hubgw-0` (Hub1 ↔ on-prem), `hubgw-onprem` (simulated on-premises) |
+| Network Security Group | 1 (shared) | `anvm-nsg` — denies outbound RFC1918 traffic, priority 150 (demonstrates admin-rule override) |
+| Network Manager | 1 | `AVNM-Demo` — 5 network groups, 3 connectivity configs, 1 security admin config |
 
-And Deploy:
+### Quick-reference inventory (for the live demo)
 
-![image](images/commitdeployment.png)
+| Role | Name | Private IP |
+|---|---|---|
+| VM — Hub1 | VM-0 | 10.0.0.4 |
+| VM — Non-trusted Hub1 | VM-1 | 10.0.1.4 |
+| VM — Trusted Hub1 | VM-2 | 10.0.2.4 |
+| VM — Hub2 | VM-16 | 10.0.16.4 |
+| VM — Non-trusted Hub2 | VM-17 | 10.0.17.4 |
+| VM — Trusted Hub2 | VM-18 | 10.0.18.4 |
+| Firewall Hub1 | hubfirewall-0 | 10.0.0.68 |
+| Firewall Hub2 | hubfirewall-16 | 10.0.16.68 |
+| Bastion Hub1 | hubbastion-0 | — |
+| Bastion Hub2 | hubbastion-16 | — |
+| VPN GW (Hub1) | hubgw-0 | — |
+| VPN GW (on-prem sim) | hubgw-onprem | — |
 
-## Explore
+**VM sign-in:** username is the value you supplied for `adminUsername` (defaults to `AzureAdmin`)
+and password is the value you supplied for `adminPassword` at deployment time — connect via
+**Bastion**, never RDP/SSH directly to a public IP.
 
-### VM Effective Routes
+## Deploy
 
-List the effective routes for the VM in Hub VNET 0:
+### 1. Base infrastructure (Bicep)
 
-`az network nic show-effective-route-table --name VMNic-0 -g {rgname} -o table`
+```powershell
+az login
+az account set --subscription <your-subscription-id>
 
-```Source                 State    Address Prefix    Next Hop Type          Next Hop IP
----------------------  -------  ----------------  ---------------------  -------------
-Default                Active   10.0.0.0/24       VnetLocal
-Default                Active   10.0.1.0/24       VNetPeering
-Default                Active   10.0.2.0/24       VNetPeering
-Default                Active   10.0.3.0/24       VNetPeering
-Default                Active   10.0.4.0/24       VNetPeering
-Default                Active   10.0.5.0/24       VNetPeering
-Default                Active   10.0.6.0/24       VNetPeering
-Default                Active   10.0.7.0/24       VNetPeering
-Default                Active   10.0.8.0/24       VNetPeering
-Default                Active   10.0.9.0/24       VNetPeering
-VirtualNetworkGateway  Active   10.0.11.0/24      VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.10.158/32    VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.10.0/24      VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.12.0/24      VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.13.0/24      VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.15.0/24      VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.14.0/24      VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.16.0/24      VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.17.0/24      VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.18.0/24      VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.19.0/24      VirtualNetworkGateway  20.13.72.192
-Default                Active   0.0.0.0/0         Internet
+az deployment group create `
+  -g <your-resource-group> `
+  --template-file templates/main-hub-s2s.bicep `
+  --parameters adminPassword='<a-strong-password>' sourceIPaddressRDP='<your-public-ip>/32'
 ```
-Observe routes are present to all peered (spoke) VNETs, and to all VNETs in the other network groups via the VNET Gateway:
 
-List the effective routes for the VM in Spoke VNET 1:
+This deploys the 32 VNets/VMs, both hubs' firewalls/bastions/gateways, the shared NSG, and an
+initial 2-group AVNM baseline (Network Manager, one network group per hub, Hub & Spoke
+connectivity, baseline security admin rules, a routing configuration for firewall-as-router).
 
-`az network nic show-effective-route-table --name VMNic-1 -g {rgname} -o table`
+### 2. Apply the Trusted / Non-trusted 4-group + global backup mesh topology
+
+Starting from the base 2-group baseline, the live demo topology in this repo was reached with the
+following AVNM changes (via `az network manager` CLI / Azure portal):
+
+1. **Split each hub's network group into Trusted + Non-trusted** — create
+   `trusted-hub1-networkgroup`, `nontrusted-hub1-networkgroup`, `trusted-hub2-networkgroup`,
+   `nontrusted-hub2-networkgroup` and move each VNet's static membership into the correct group
+   (Trusted = one hub VNet + 3 spokes per hub; Non-trusted = the remaining 11 spokes per hub).
+2. **Retarget the connectivity configs** — `production-hubspokemesh` → both Hub1 groups,
+   `development-hubspokemesh` → both Hub2 groups (`--applies-to-groups`, `useHubGateway=true`).
+3. **Add the global backup mesh** — create `global-backup-networkgroup` containing one Trusted
+   VNet per hub (`anm-vnet-2`, `anm-vnet-18`), then a new **Mesh** connectivity config
+   `global-backup-mesh` (no hub, global scope) applied to that group.
+4. **Retarget Security Admin rule collections** — `secadminrulecollall` → all 4 hub groups;
+   `secadminrulecoll-production`/`-development` → the two Non-trusted groups;
+   `secadminrulecoll-trusted` (`AlwaysAllow`) → both Trusted groups.
+5. **Add the simulated on-premises VPN** — new `anm-vnet-onprem` VNet + `GatewaySubnet`, a
+   `hubgw-onprem` VPN gateway, and `conn-*` site-to-site connections to `hubgw-0` only (remove any
+   Hub1↔Hub2 gateway link — cross-environment reachability is now via mesh + firewall routing).
+6. **Commit and deploy** both configuration types to the target region:
+   ```powershell
+   az network manager post-commit -g <your-resource-group> --network-manager-name AVNM-Demo `
+     --commit-type Connectivity --target-locations swedencentral `
+     --configuration-ids <production-hubspokemesh-id> <development-hubspokemesh-id> <global-backup-mesh-id>
+
+   az network manager post-commit -g <your-resource-group> --network-manager-name AVNM-Demo `
+     --commit-type SecurityAdmin --target-locations swedencentral `
+     --configuration-ids <secadminrule-config-id>
+   ```
+
+   > **CLI gotchas learned the hard way:** `security-admin-config rule-collection update
+   > --applies-to-groups` only keeps the *last* value if you pass multiple `network-group-id=X`
+   > pairs in one flag — repeat the whole `--applies-to-groups` flag once per group instead.
+   > `connect-config delete` takes `--configuration-name`, not `--name`. Deleting a network group
+   > requires `az network manager group delete` (not `network-group delete`), and only works after
+   > any config version that still references it has been redeployed.
+
+7. **Verify** with `az network manager list-deploy-status` — all three connectivity configs and
+   the security admin config should show `Deployed`, not just `Configured`.
+
+Full change history is in [`whats-new.md`](whats-new.md).
+
+## Explore the AVNM configuration (portal)
+
+![Selecting a configuration to deploy](images/selectdeployment.png)
+
+Portal → **Network Manager `AVNM-Demo`** → **Configurations** → select the Connectivity or
+Security Admin configuration → **Deploy** → pick target region(s).
+
+![Committing a deployment](images/commitdeployment.png)
+
+![NSG rules on the shared NSG](images/nsg-rules.png)
+
+![Security admin rules — AlwaysAllow overriding NSG](images/admin-security-rules.png)
+
+![Effective NSG showing the AVNM admin rule above the NSG rule](images/avnm-nsg.png)
+
+![Traffic evaluation / what-if tool in Network Watcher](images/traffic-evaluation.png)
+
+## Demo scenarios
+
+The full rehearsal script with exact CLI commands and talking points is in
+[`DEMO-SCRIPT.md`](DEMO-SCRIPT.md) (or the standalone [`DEMO-SCRIPT.html`](DEMO-SCRIPT.html)).
+Highlights:
+
+1. **Topology overview** — one Network Manager, 5 groups, 3 connectivity configs, 1 security admin
+   config, governing 32 VNets across two simulated regions.
+2. **Trusted Mesh vs. Non-trusted Hub-and-Spoke** — compare effective routes on `VMNic-2`
+   (`ConnectedGroup`, direct mesh) vs. `VMNic-1` (hub-only, `VirtualAppliance` next hop).
+3. **Firewall as router** — transitive spoke↔spoke routing through `hubfirewall-0`/`-16`, no VPN
+   or manual UDRs required.
+4. **Security Admin rules supersede NSGs** — `curl` from a Trusted VM succeeds despite the shared
+   NSG's deny rule, because `AlwaysAllow` wins; the same test from a Non-trusted VM fails as
+   expected.
+5. **Dual-hub symmetry** — Hub1 and Hub2 are configured identically, showing the model scales to
+   multi-region without per-region policy duplication.
+6. **Global backup mesh / DR** — every Trusted VNet can reach its cross-hub counterpart directly,
+   independent of the primary hub-and-spoke topology.
+7. **Scoped on-premises VPN** — `hubgw-onprem` reaches Hub1 only; Hub2 has no path to on-prem at
+   all, demonstrating deliberate network segmentation.
+8. **Live connectivity test matrix** — a table of VM-to-VM `curl`/`Test-NetConnection` checks run
+   from Bastion, with expected pass/fail results for each topology rule.
+
+## Repository layout
 
 ```
-Source                 State    Address Prefix                                                                                   Next Hop Type          Next Hop IP
----------------------  -------  -----------------------------------------------------------------------------------------------  ---------------------  -------------
-Default                Active   10.0.1.0/24                                                                                      VnetLocal
-Default                Active   10.0.0.0/24                                                                                      VNetPeering
-Default                Active   10.0.9.0/24 10.0.8.0/24 10.0.7.0/24 10.0.6.0/24 10.0.5.0/24 10.0.4.0/24 10.0.3.0/24 10.0.2.0/24  ConnectedGroup
-VirtualNetworkGateway  Active   10.0.11.0/24                                                                                     VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.10.158/32                                                                                   VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.10.0/24                                                                                     VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.12.0/24                                                                                     VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.13.0/24                                                                                     VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.15.0/24                                                                                     VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.14.0/24                                                                                     VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.16.0/24                                                                                     VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.17.0/24                                                                                     VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.18.0/24                                                                                     VirtualNetworkGateway  20.13.72.192
-VirtualNetworkGateway  Active   10.0.19.0/24                                                                                     VirtualNetworkGateway  20.13.72.192
-Default                Active   0.0.0.0/0                                                                                        Internet
-
+templates/
+  main-hub-s2s.bicep    # Base infrastructure: VNets, VMs, firewalls, bastions, gateways, NSG,
+                         # and an initial 2-group AVNM baseline
+  main-hub-s2s.json     # ARM (JSON) build of the same template
+images/                 # Architecture diagram + portal screenshots referenced above
+DEMO-SCRIPT.md           # Full rehearsal script: inventory, security rules, 8 scenarios
+DEMO-SCRIPT.html         # Same script, standalone HTML for presenting without a markdown viewer
+whats-new.md             # Change log of every AVNM configuration change applied to reach this topology
 ```
-Observe single entry for all VNETs in the Network Group with Next Hop Type ConnectedGroup, and routes for all VNETs in the other Network Group via the VNET Gateway in the Hub.
 
-### Effective Security Rules
+## Cleanup
 
-Listing Effective security rules in the portal, on a VM NIC in one of the Network Groups, shows separate entries for the NSG attached to the subnet and the Admin Rules programmed by AVNM.
+```powershell
+az group delete -g <your-resource-group> --yes --no-wait
+```
 
-#### NSG Rules
-![image](images/nsg-rules.png)
+## Prerequisites
 
-#### Security Admin Rules
-![image](images/admin-security-rules.png)
+- An Azure subscription with quota for ~32 VNets, 6 VMs (`Standard_D2s_v5`), 2 Azure Firewall
+  Premium instances, 2 Azure Bastion instances, and 2 VPN gateways in your chosen region.
+- Azure CLI, logged in (`az login`) with Network Contributor (or higher) on the target
+  subscription/resource group.
+- A public IP (or CIDR) to allow for Bastion/management access — replace the sample
+  `sourceIPaddressRDP` default with your own.
 
-### Connectivity
-Routes to other VMs exist, but outbound access is controlled by NSG- and the Security Admin Rules. 
-- The Security Admin Rule collections contain Allow rules for each Network Groups' prefixes.
-- Traffic permitted by Security Admin Rules with action Allow is subsequently evaluated by any NSGs attached to the subnet or NIC.
-- The NSG attached to the subnet contains a rule blocking outbound communication to RFC1918 ranges.
+## Credits
 
-#### From a Hub
-Use Bastion Host in a Hub VNET to log in to the VM in that Hub.
-
-Use `curl 10.0.{spoke number}.4` to check it is possible to connect to VMs in Spokes in the same Network Group, and in the other Group. Verify that there is internet access from the VM. 
-
-It will not be possible to connect to any Spoke VM from a Hub. 
-
-Reason: The Hubs are not controlled by AVNM as they are not part of any Network Group, so they do not have any Security Admin Rules applied. However, the normal NSG applied to the vmSubnet in all VNETs including Hubs has a rule blocking all outbound traffic to RFC1918 prefixes.
-
-#### From a Spoke
-Use Bastion Host in a Hub VNET to log in to the VM in a spoke connected to that Hub.
-
-Use `curl 10.0.{spoke number}.4` to check whether is possible to connect to VMs in Spokes in the same Network Group, and in the other Group. Verify that there is no internet access from the VM. 
-
-It will not be possible to any Spoke. 
-
-Reason: The Spokes have both the Security Admin Rules and the NSG applied. The Security Admin Rules contain rules explicitly permitting outbound traffic to Spokes in the same Network Group. However, the Action on these rules is set to Allow - not Always Allow. This means that traffic permitted is still evaluated by the NSG, which blocks all outbound traffic to RFC1918 prefixec.
-
-Now modify the Action to Always Allow and redeploy the configuration.
-
-Check connectivity from Spoke to other Spokes again. It should now be possible to connect to Spokes in the same Network Group, as the Security Admin Rules allow outbound to the prefixes in the Group and are set to Always Allow.
-
-### Monitoring and Logging
-
-#### NSG Flows Logs
-
-#### Network Watcher Diagnostics
-
-## Live Demo Environment: Trusted / Non-trusted × Hub1 / Hub2 + Global Backup Mesh
-
-> The deployed lab in subscription `<your-subscription-id>`, resource group `AVNM`
-> (region `swedencentral`) has been re-configured from the original Production/Development
-> Hub&Spoke-with-VPN pattern above into a **4 network group topology** — Trusted and Non-trusted,
-> duplicated across two hubs (Hub1 and Hub2) — plus a cross-hub **global backup mesh** group,
-> matching the "trusted/non-trusted, meshed or not, hub-per-region" reference design. See
-> `whats-new.md` for the full change log. Architecture diagram:
-> `avnm-architecture.png` / `avnm-architecture.excalidraw` (session artifacts).
->
-> **Deployment status:** all three connectivity configs (`development-hubspokemesh`,
-> `production-hubspokemesh`, `global-backup-mesh`) are committed and `Deployed` to `swedencentral`
-> (verify with `az network manager list-deploy-status --network-manager-name AVNM-Demo -g AVNM --region swedencentral -o table`).
-> Remember that mesh/`DirectlyConnected` connectivity never shows up as a VNet peering — always
-> confirm it via effective routes (next hop type `ConnectedGroup`), not the Peerings blade.
-
-Summary of the current live topology — **5 network groups**:
-
-- **`trusted-hub1-networkgroup`** (`anm-vnet-2`, `8`, `9`, `10`): meshed via the
-  `production-hubspokemesh` connectivity config (Hub&Spoke, `useHubGateway=true`) under hub
-  `anm-vnet-0`/`hubfirewall-0`. Full any-to-any peering between the 4 VNETs in this group.
-- **`nontrusted-hub1-networkgroup`** (`anm-vnet-1`, `3`–`7`, `11`–`15` — 11 VNETs): Hub&Spoke only
-  (same `production-hubspokemesh` config, hub `anm-vnet-0`); spoke↔spoke traffic is routed through
-  `hubfirewall-0`, no mesh.
-- **`trusted-hub2-networkgroup`** (`anm-vnet-18`, `25`, `26`, `27`): meshed via
-  `development-hubspokemesh` under hub `anm-vnet-16`/`hubfirewall-16`. Same pattern as Hub1's
-  trusted group, in the second (logical) hub/region.
-- **`nontrusted-hub2-networkgroup`** (`anm-vnet-17`, `19`–`24`, `28`–`31` — 11 VNETs): Hub&Spoke
-  only, routed through `hubfirewall-16`, no mesh — mirrors Hub1's non-trusted group.
-- **`global-backup-networkgroup`** (`anm-vnet-2` + `anm-vnet-18`, one trusted VNet from each hub):
-  connected with a **Mesh** connectivity config (`global-backup-mesh`, global, direct peering, no
-  hub) — a cross-hub / cross-region disaster-recovery backup link between the two trusted zones.
-
-Each hub now has **its own Azure Firewall** (`hubfirewall-0` in Hub1, `hubfirewall-16` in Hub2),
-acting as the router for its non-trusted spokes' transitive traffic — demonstrating the
-firewall-as-hub-router pattern instead of a VPN shortcut between environments.
-
-- **Simulated on-premises**: `anm-vnet-onprem` (10.100.0.0/24) with VPN Gateway `hubgw-onprem`,
-  connected via site-to-site VPN (BGP) **only to Hub1** (`hubgw-0`, the production-origin hub).
-  This is the only VPN connection in the lab — the old Hub2/Development gateway and the original
-  Production↔Development VPN link were removed, since cross-environment traffic is now demonstrated
-  with mesh + firewall routing instead of a VPN shortcut. Hub2 (`hubfirewall-16`) has no VPN
-  Gateway.
-- **Security Admin rules** (`secadminrule` config, 4 collections):
-  - `secadminrulecollall` — deny-all-outbound baseline, applies to all 4 hub network groups.
-  - `secadminrulecoll-production` — `allowwithinprod` (Allow) scoped to `nontrusted-hub1-networkgroup`.
-  - `secadminrulecoll-development` — `allowwithindev` (Allow) scoped to `nontrusted-hub2-networkgroup`.
-  - `secadminrulecoll-trusted` — `allowtrustedmesh-in`/`allowtrustedmesh-out` (**AlwaysAllow**),
-    applied to **both** `trusted-hub1-networkgroup` and `trusted-hub2-networkgroup` — this is the
-    rule collection that demonstrates Admin Rules (AlwaysAllow) superseding any NSG on the subnet.
-
-This lets a demo show, side by side: two hubs (Hub1/Hub2, one per "region" — both currently deployed
-in `swedencentral` for capacity reasons, kept logically separate by naming/network-group split),
-each split into a meshed "trusted" zone (flat any-to-any reachability) and an isolated
-"non-trusted" hub-and-spoke zone routed through that hub's own firewall, a VPN-connected simulated
-on-premises network landing only in Hub1, and a global backup mesh directly connecting the two
-trusted zones across hubs — all managed centrally from one AVNM instance.
-
-
+Base infrastructure template adapted from the original [`mddazure/avnm-demo`](https://github.com/mddazure/avnm-demo)
+lab; the network group topology, global backup mesh, on-premises VPN, and demo scenarios in this
+repo are a custom redesign built on top of it.

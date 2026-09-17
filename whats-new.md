@@ -1,5 +1,25 @@
 # What's New
 
+## README rewrite: align documentation with the live 5-group topology
+
+The README previously still described the original `mddazure/avnm-demo` lab (Production/Development
+2-group design, VPN mesh between hubs, generic `copies`-based inventory) with only a short "Live
+Demo Environment" tail describing what was actually deployed.
+
+### Changed
+- Rewrote `README.md` end-to-end to document only the current live topology: the 5 network groups
+  (`trusted-hub1`, `nontrusted-hub1`, `trusted-hub2`, `nontrusted-hub2`, `global-backup`), the 4
+  Security Admin rule collections, the dual per-hub firewalls/bastions/gateways, and the
+  Hub1-only simulated on-premises VPN.
+- Replaced the old `avnmdemo.png`/`.vsdx` topology diagram (which showed the obsolete 2-group
+  design) with `images/avnm-architecture.png` (+ `.excalidraw` source) matching the live groups.
+- Clarified that `templates/main-hub-s2s.bicep` only deploys the base infrastructure and an
+  original/starter 2-group AVNM configuration — the final 5-group + global-backup-mesh +
+  on-premises-VPN topology is applied afterward via `az network manager` CLI steps, now documented
+  step-by-step in the README's Deploy section.
+- Linked `DEMO-SCRIPT.md`/`DEMO-SCRIPT.html` and this changelog directly from the README instead of
+  duplicating scenario text.
+
 ## Connectivity fix: deploy missing configs + demo script corrections (live demo environment)
 
 Pre-demo verification pass on the deployed lab found that two of the three connectivity
